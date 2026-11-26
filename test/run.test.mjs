@@ -168,7 +168,7 @@ test("the readiness view's package reaches the command's environment", async () 
   const consoleState = await startConsole();
   const dir = mkdtempSync(join(tmpdir(), "spawndroid-env-"));
   try {
-    const api = createApi({ baseUrl: consoleState.root, apiKey: "test" });
+    const api = createApi({ baseUrl: consoleState.root, apiKey: "test", serverErrorRetryMs: 0 });
     const outcome = await executeRun({
       spec: baseSpec({
         command: [
@@ -193,7 +193,7 @@ test("falls back to the create response when readiness omits the package", async
   const consoleState = await startConsole({ readyPackage: null });
   const dir = mkdtempSync(join(tmpdir(), "spawndroid-env-"));
   try {
-    const api = createApi({ baseUrl: consoleState.root, apiKey: "test" });
+    const api = createApi({ baseUrl: consoleState.root, apiKey: "test", serverErrorRetryMs: 0 });
     const outcome = await executeRun({
       spec: baseSpec({
         command: [
@@ -226,7 +226,7 @@ test("green command: passes the run, tears down and attaches JUnit", async () =>
   const dir = mkdtempSync(join(tmpdir(), "spawndroid-run-"));
   writeFileSync(join(dir, "junit.xml"), "<testsuite/>");
   try {
-    const api = createApi({ baseUrl: consoleState.root, apiKey: "test" });
+    const api = createApi({ baseUrl: consoleState.root, apiKey: "test", serverErrorRetryMs: 0 });
     const outcome = await executeRun({
       spec: baseSpec({ report: "junit.xml" }),
       specDir: dir,
@@ -264,7 +264,7 @@ test("without a report setting, the Gradle reports the command wrote are attache
     "process.exit(1)",
   ].join(";")
   try {
-    const api = createApi({ baseUrl: consoleState.root, apiKey: "test" })
+    const api = createApi({ baseUrl: consoleState.root, apiKey: "test", serverErrorRetryMs: 0 })
     const outcome = await executeRun({
       spec: baseSpec({ command: [process.execPath, "-e", write] }),
       specDir: dir,
@@ -288,7 +288,7 @@ test("without a report setting, the Gradle reports the command wrote are attache
 test("failing command: exit 1 and a failed verdict", async () => {
   const consoleState = await startConsole();
   try {
-    const api = createApi({ baseUrl: consoleState.root, apiKey: "test" });
+    const api = createApi({ baseUrl: consoleState.root, apiKey: "test", serverErrorRetryMs: 0 });
     const outcome = await executeRun({
       spec: baseSpec({ command: [process.execPath, "-e", "process.exit(3)"] }),
       specDir: process.cwd(),
@@ -315,7 +315,7 @@ test("a transient start failure is retried with the same key", async () => {
     createCode: "UPSTREAM_TIMEOUT",
   });
   try {
-    const api = createApi({ baseUrl: consoleState.root, apiKey: "test" });
+    const api = createApi({ baseUrl: consoleState.root, apiKey: "test", serverErrorRetryMs: 0 });
     const outcome = await executeRun({
       spec: baseSpec(),
       specDir: process.cwd(),
@@ -334,7 +334,7 @@ test("a transient start failure is retried with the same key", async () => {
 test("a transient readiness failure is retried until the deadline", async () => {
   const consoleState = await startConsole({ readyFailures: 2 });
   try {
-    const api = createApi({ baseUrl: consoleState.root, apiKey: "test" });
+    const api = createApi({ baseUrl: consoleState.root, apiKey: "test", serverErrorRetryMs: 0 });
     const outcome = await executeRun({
       spec: baseSpec(),
       specDir: process.cwd(),
@@ -355,7 +355,7 @@ test("plan limits are not retried", async () => {
     createCode: "PLAN_RUNNER_LIMIT",
   });
   try {
-    const api = createApi({ baseUrl: consoleState.root, apiKey: "test" });
+    const api = createApi({ baseUrl: consoleState.root, apiKey: "test", serverErrorRetryMs: 0 });
     const outcome = await executeRun({
       spec: baseSpec(),
       specDir: process.cwd(),
@@ -373,7 +373,7 @@ test("plan limits are not retried", async () => {
 test("capacity 429 is retried with the same idempotency key", async () => {
   const consoleState = await startConsole({ createFailures: 1 });
   try {
-    const api = createApi({ baseUrl: consoleState.root, apiKey: "test" });
+    const api = createApi({ baseUrl: consoleState.root, apiKey: "test", serverErrorRetryMs: 0 });
     const outcome = await executeRun({
       spec: baseSpec(),
       specDir: process.cwd(),
@@ -394,7 +394,7 @@ test("fixtures are presigned, uploaded and committed", async () => {
   const dir = mkdtempSync(join(tmpdir(), "spawndroid-fixtures-"));
   writeFileSync(join(dir, "fixture.bin"), Buffer.from("hello"));
   try {
-    const api = createApi({ baseUrl: consoleState.root, apiKey: "test" });
+    const api = createApi({ baseUrl: consoleState.root, apiKey: "test", serverErrorRetryMs: 0 });
     const outcome = await executeRun({
       spec: baseSpec({
         fixtures: [{ local: "fixture.bin", device: "/sdcard/Download" }],
@@ -425,7 +425,7 @@ test("a device that never becomes ready is an infrastructure failure", async () 
   const consoleState = await startConsole();
   consoleState.readyAfter = 1_000;
   try {
-    const api = createApi({ baseUrl: consoleState.root, apiKey: "test" });
+    const api = createApi({ baseUrl: consoleState.root, apiKey: "test", serverErrorRetryMs: 0 });
     const outcome = await executeRun({
       spec: baseSpec({ timeout: 0 }),
       specDir: process.cwd(),
@@ -484,7 +484,7 @@ test("names the workspace the run lands in before it starts", async () => {
   });
   const lines = [];
   try {
-    const api = createApi({ baseUrl: consoleState.root, apiKey: "test" });
+    const api = createApi({ baseUrl: consoleState.root, apiKey: "test", serverErrorRetryMs: 0 });
     const outcome = await executeRun({
       spec: baseSpec(),
       specDir: process.cwd(),
@@ -507,7 +507,7 @@ test("a console without whoami still runs, without naming a workspace", async ()
   const consoleState = await startConsole();
   const lines = [];
   try {
-    const api = createApi({ baseUrl: consoleState.root, apiKey: "test" });
+    const api = createApi({ baseUrl: consoleState.root, apiKey: "test", serverErrorRetryMs: 0 });
     const outcome = await executeRun({
       spec: baseSpec(),
       specDir: process.cwd(),
@@ -650,4 +650,104 @@ test("a command that cannot start says so", async () => {
   } finally {
     await consoleState.close();
   }
+});
+
+/** An API whose calls are scripted per test; records attempts and ends. */
+function stubApi(overrides = {}) {
+  const calls = { attempts: [], ends: [] };
+  return {
+    calls,
+    api: {
+      baseUrl: "http://console.test",
+      workspace: async () => null,
+      reportAttempt: async (attempt) => {
+        calls.attempts.push(attempt);
+        return true;
+      },
+      endSession: async (id, result) => {
+        calls.ends.push({ id, result });
+      },
+      ...overrides,
+    },
+  };
+}
+
+function apiError(status, extra) {
+  return Object.assign(new Error(`${status} boom`), { status, ...extra });
+}
+
+test("an upload that fails before a session is reported, with its request id logged", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "spawndroid-attempt-"));
+  writeFileSync(join(dir, "wire.apk"), Buffer.alloc(8, 1));
+  const lines = [];
+  const { api, calls } = stubApi({
+    uploadApk: async () => {
+      throw apiError(500, {
+        code: "INTERNAL",
+        requestId: "req_828daf7756ba4e3480a1",
+        attemptPhase: "register",
+      });
+    },
+  });
+  const outcome = await executeRun({
+    spec: baseSpec({ app: "wire.apk" }),
+    specDir: dir,
+    api,
+    env: { GITHUB_SHA: "2554a04b1f0e", GITHUB_REF_NAME: "main" },
+    log: (line) => lines.push(line),
+    ...fast,
+  });
+  assert.equal(outcome.exitCode, 2);
+  assert.equal(outcome.sessionId, null);
+  assert.ok(lines.includes("request id: req_828daf7756ba4e3480a1"));
+  assert.deepEqual(calls.attempts, [
+    {
+      phase: "register",
+      status: 500,
+      code: "INTERNAL",
+      requestId: "req_828daf7756ba4e3480a1",
+      build: "wire.apk",
+      commit: "2554a04b1f0e",
+      branch: "main",
+    },
+  ]);
+});
+
+test("a start that cannot get a session is reported as the start phase", async () => {
+  const { api, calls } = stubApi({
+    createSession: async () => {
+      throw apiError(503, { code: "UPSTREAM_UNAVAILABLE", requestId: "req_2" });
+    },
+  });
+  const outcome = await executeRun({
+    spec: baseSpec(),
+    specDir: tmpdir(),
+    api,
+    env: {},
+    log: quiet,
+    ...fast,
+    maxAttempts: 2,
+  });
+  assert.equal(outcome.exitCode, 2);
+  assert.equal(calls.attempts.length, 1);
+  assert.equal(calls.attempts[0].phase, "start");
+  assert.equal(calls.attempts[0].requestId, "req_2");
+});
+
+test("a failure after the session exists is not reported as an attempt", async () => {
+  const { api, calls } = stubApi({
+    createSession: async () => ({ sessionId: "sess_9" }),
+    getSession: async () => ({ state: "failed", errorCode: "DEVICE_BOOT_TIMEOUT" }),
+  });
+  const outcome = await executeRun({
+    spec: baseSpec(),
+    specDir: tmpdir(),
+    api,
+    env: {},
+    log: quiet,
+    ...fast,
+  });
+  assert.equal(outcome.exitCode, 2);
+  assert.equal(calls.attempts.length, 0);
+  assert.deepEqual(calls.ends, [{ id: "sess_9", result: "failed" }]);
 });
