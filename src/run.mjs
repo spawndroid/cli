@@ -20,12 +20,28 @@ export const EXIT_TESTS_FAILED = 1;
 export const EXIT_INFRA = 2;
 
 export class InfraError extends Error {
-  constructor(message, { code = null, phase = null, hint = null } = {}) {
+  constructor(
+    message,
+    {
+      code = null,
+      phase = null,
+      hint = null,
+      status = null,
+      requestId = null,
+      attemptPhase = null,
+    } = {},
+  ) {
     super(message);
     this.name = "InfraError";
     this.code = code;
     this.phase = phase;
     this.hint = hint;
+    /** HTTP status of the API call that failed, when one did. */
+    this.status = status;
+    /** The console's id for that request, to quote to support. */
+    this.requestId = requestId;
+    /** upload | register | start: where a run without a session stopped. */
+    this.attemptPhase = attemptPhase;
   }
 }
 
@@ -84,6 +100,25 @@ function toInfra(error) {
   if (error instanceof InfraError) return error;
   return new InfraError(error?.message ?? String(error), {
     code: error?.code ?? error?.legacyCode ?? null,
+    status: typeof error?.status === "number" ? error.status : null,
+    requestId: error?.requestId ?? null,
+    attemptPhase: error?.attemptPhase ?? null,
+  });
+}
+
+/**
+ * A run that stopped before it had a session leaves no run in the console.
+ * Report it (identifiers only) so the Runs page can show it; best effort.
+ */
+async function reportFailedAttempt({ api, infra, spec, env }) {
+  if (!infra.attemptPhase || !api.reportAttempt) return;
+  await api.reportAttempt({
+    phase: infra.attemptPhase,
+    status: infra.status,
+    code: infra.code,
+    requestId: infra.requestId,
+    build: basename(spec.app),
+    ...ciCoords(env),
   });
 }
 
@@ -225,6 +260,10 @@ export async function executeRun({
       retryDelayMs,
       sleep,
       log,
+    }).catch((error) => {
+      const infra = toInfra(error);
+      infra.attemptPhase ??= "start";
+      throw infra;
     });
     sessionId = started?.sessionId ?? null;
     if (!sessionId) throw new InfraError("the API did not return a session id");
@@ -306,6 +345,8 @@ export async function executeRun({
       log(`code: ${infra.code}${infra.phase ? ` (phase ${infra.phase})` : ""}`);
     }
     if (hint) log(`hint: ${hint}`);
+    if (infra.requestId) log(`request id: ${infra.requestId}`);
+    if (!sessionId) await reportFailedAttempt({ api, infra, spec, env });
     await teardown("failed");
     return {
       exitCode: EXIT_INFRA,
@@ -371,6 +412,8 @@ async function createWithCapacityRetry({
           `${maxAttempts} attempts failed: ${error.message}`,
           {
             code: error.code ?? error.legacyCode ?? null,
+            status: typeof error.status === "number" ? error.status : null,
+            requestId: error.requestId ?? null,
           },
         );
       }
