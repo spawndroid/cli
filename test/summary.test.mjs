@@ -141,3 +141,44 @@ test("the tail keeps only the newest bytes", () => {
   tail.push("x".repeat(25));
   assert.equal(tail.text(), "x".repeat(10));
 });
+
+test("the last error line skips counts and build-tool wrappers", async () => {
+  const { lastErrorLine } = await import("../src/summary.mjs");
+  const out = `
+  1) Login signs in:
+     NoSuchElementError: element ("~login") still not existing after 10000ms
+      at async Context.<anonymous> (test/login.e2e.js:12:5)
+
+  9 passing (1m)
+  1 failing
+
+npm ERR! Test failed.  See above for more details.
+Error: Process completed with exit code 1.
+`;
+  assert.equal(
+    lastErrorLine(out),
+    'NoSuchElementError: element ("~login") still not existing after 10000ms',
+  );
+});
+
+test("gradle and pytest wrappers are not the cause", async () => {
+  const { lastErrorLine } = await import("../src/summary.mjs");
+  assert.equal(
+    lastErrorLine(`E   AssertionError: assert 'Home' == 'Login'
+FAILED tests/test_login.py::test_login
+==== 1 failed in 3.10s ====
+`),
+    "E AssertionError: assert 'Home' == 'Login'",
+  );
+  assert.equal(
+    lastErrorLine(`java.lang.AssertionError: expected:<1> but was:<2>
+FAILURE: Build failed with an exception.
+* What went wrong:
+Execution failed for task ':app:connectedDebugAndroidTest'.
+BUILD FAILED in 2m 3s
+`),
+    "java.lang.AssertionError: expected:<1> but was:<2>",
+  );
+  assert.equal(lastErrorLine("all good\nBUILD SUCCESSFUL\n"), null);
+  assert.equal(lastErrorLine(""), null);
+});

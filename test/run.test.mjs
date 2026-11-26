@@ -239,7 +239,9 @@ test("green command: passes the run, tears down and attaches JUnit", async () =>
     });
     assert.equal(outcome.exitCode, 0);
     assert.equal(outcome.result, "passed");
-    assert.deepEqual(consoleState.ends, [{ result: "passed" }]);
+    assert.deepEqual(consoleState.ends, [
+      { result: "passed", command: { stage: "command", exitCode: 0, signal: null, lastErrorLine: null } },
+    ]);
     assert.equal(consoleState.reports.length, 1);
     // The report lands while the session is open, then the device is released.
     assert.deepEqual(consoleState.events, ["create", "report", "end"]);
@@ -295,7 +297,12 @@ test("failing command: exit 1 and a failed verdict", async () => {
       ...fast,
     });
     assert.equal(outcome.exitCode, 1);
-    assert.deepEqual(consoleState.ends, [{ result: "failed" }]);
+    assert.deepEqual(consoleState.ends, [
+      {
+        result: "failed",
+        command: { stage: "command", exitCode: 3, signal: null, lastErrorLine: null },
+      },
+    ]);
   } finally {
     await consoleState.close();
   }
@@ -427,7 +434,17 @@ test("a device that never becomes ready is an infrastructure failure", async () 
       ...fast,
     });
     assert.equal(outcome.exitCode, 2);
-    assert.deepEqual(consoleState.ends, [{ result: "failed" }]);
+    assert.deepEqual(consoleState.ends, [
+      {
+        result: "failed",
+        command: {
+          stage: "device",
+          exitCode: null,
+          signal: null,
+          lastErrorLine: "timed out after 0s waiting for the device",
+        },
+      },
+    ]);
   } finally {
     await consoleState.close();
   }
@@ -552,6 +569,12 @@ test("without a JUnit report, the runner's closing count goes with the result", 
         skipped: 0,
         failing: ["tests/test_login.py::test_login"],
       },
+      command: {
+        stage: "command",
+        exitCode: 1,
+        signal: null,
+        lastErrorLine: "FAILED tests/test_login.py::test_login - AssertionError",
+      },
     });
   } finally {
     await consoleState.close();
@@ -572,7 +595,58 @@ test("a command with no recognisable summary ends with the result alone", async 
       log: quiet,
       ...fast,
     });
-    assert.deepEqual(consoleState.ends.at(-1), { result: "passed" });
+    assert.deepEqual(consoleState.ends.at(-1), {
+      result: "passed",
+      command: { stage: "command", exitCode: 0, signal: null, lastErrorLine: null },
+    });
+  } finally {
+    await consoleState.close();
+  }
+});
+
+test("a failing command sends its exit code and the last error it printed", async () => {
+  const consoleState = await startConsole();
+  try {
+    const api = createApi({ baseUrl: consoleState.root, apiKey: "test", serverErrorRetryMs: 0 });
+    await executeRun({
+      spec: baseSpec({
+        command: [
+          process.execPath,
+          "-e",
+          "console.error('NoSuchElementError: element (~login) not found'); console.error('npm ERR! Test failed.'); process.exit(2)",
+        ],
+      }),
+      specDir: process.cwd(),
+      api,
+      log: quiet,
+      ...fast,
+    });
+    assert.deepEqual(consoleState.ends.at(-1).command, {
+      stage: "command",
+      exitCode: 2,
+      signal: null,
+      lastErrorLine: "NoSuchElementError: element (~login) not found",
+    });
+  } finally {
+    await consoleState.close();
+  }
+});
+
+test("a command that cannot start says so", async () => {
+  const consoleState = await startConsole();
+  try {
+    const api = createApi({ baseUrl: consoleState.root, apiKey: "test", serverErrorRetryMs: 0 });
+    await executeRun({
+      spec: baseSpec({ command: ["/nonexistent/spawndroid-test-binary"] }),
+      specDir: process.cwd(),
+      api,
+      log: quiet,
+      ...fast,
+    });
+    const { command } = consoleState.ends.at(-1);
+    assert.equal(command.stage, "command");
+    assert.equal(command.exitCode, null);
+    assert.match(command.lastErrorLine, /could not start the test command/);
   } finally {
     await consoleState.close();
   }

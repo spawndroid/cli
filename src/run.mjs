@@ -14,7 +14,7 @@ import { basename, relative, resolve } from "node:path";
 
 import { DEVICE_FILE_MAX_BYTES } from "./config.mjs";
 import { collectReports, mergeJUnit } from "./reports.mjs";
-import { outputTail, parseTestSummary } from "./summary.mjs";
+import { lastErrorLine, outputTail, parseTestSummary } from "./summary.mjs";
 
 export const EXIT_PASSED = 0;
 export const EXIT_TESTS_FAILED = 1;
@@ -218,6 +218,10 @@ export async function executeRun({
   let sessionId = null;
   let workspace = null;
   let ended = false;
+  // Which step a failure after the session exists stopped at, for the run
+  // page's explanation: waiting for the device, pushing fixtures, or the
+  // test command itself.
+  let stage = "device";
   const childRef = { current: null };
   const runUrl = (id) => (id ? `${api.baseUrl}/dashboard/runs/${id}` : null);
 
@@ -280,6 +284,7 @@ export async function executeRun({
       log,
     });
 
+    stage = "fixtures";
     await pushFixtures({
       api,
       sessionId,
@@ -289,8 +294,9 @@ export async function executeRun({
     });
 
     // Reports written from here on belong to this run; older ones are stale.
+    stage = "command";
     const commandStartedAt = Date.now()
-    const { code, signal, spawnError, output } = await runCommand({
+    const { code, signal, spawnError, spawnMessage, output } = await runCommand({
       view,
       createView: started,
       appSlug: app.slug,
@@ -307,7 +313,14 @@ export async function executeRun({
       const why = spawnError
         ? "the test command could not start"
         : `the test command was interrupted (${signal})`;
-      await teardown("failed");
+      await teardown("failed", {
+        command: {
+          stage: "command",
+          exitCode: null,
+          signal: signal ?? null,
+          lastErrorLine: spawnError ? spawnMessage : lastErrorLine(output),
+        },
+      });
       log(`error: ${why}`);
       return {
         exitCode: EXIT_INFRA,
@@ -338,7 +351,15 @@ export async function executeRun({
         `summary from ${summary.runner} output: ${summary.passed} passed, ${summary.failed} failed`,
       );
     }
-    await teardown(result, summary ? { summary } : {});
+    await teardown(result, {
+      ...(summary ? { summary } : {}),
+      command: {
+        stage: "command",
+        exitCode: code,
+        signal: null,
+        lastErrorLine: code === 0 ? null : lastErrorLine(output),
+      },
+    });
     return {
       exitCode: code === 0 ? EXIT_PASSED : EXIT_TESTS_FAILED,
       sessionId,
@@ -356,7 +377,14 @@ export async function executeRun({
     if (hint) log(`hint: ${hint}`);
     if (infra.requestId) log(`request id: ${infra.requestId}`);
     if (!sessionId) await reportFailedAttempt({ api, infra, spec, env });
-    await teardown("failed");
+    await teardown("failed", {
+      command: {
+        stage,
+        exitCode: null,
+        signal: null,
+        lastErrorLine: infra.message.slice(0, 300),
+      },
+    });
     return {
       exitCode: EXIT_INFRA,
       sessionId,
@@ -556,7 +584,13 @@ function runCommand({
     child.on("error", (error) => {
       log(`could not start the test command: ${error.message}`);
       childRef.current = null;
-      done({ code: null, signal: null, spawnError: true, output: tail.text() });
+      done({
+        code: null,
+        signal: null,
+        spawnError: true,
+        spawnMessage: `could not start the test command: ${error.message}`.slice(0, 300),
+        output: tail.text(),
+      });
     });
     // `close`, not `exit`: the pipes may still hold the last lines (the
     // summary) when the process exits.
