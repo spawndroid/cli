@@ -52,7 +52,10 @@ test("uploadApk goes through presign, PUT and register", async () => {
     }
     if (request.method === "POST" && url.pathname === "/api/apps") {
       seen.register = json()
-      return send(201, { app: { slug: "checkout" } })
+      return send(201, {
+        app: { slug: "checkout", versionCode: 9 },
+        build: { version: "1.2.0", versionCode: 7 },
+      })
     }
     return send(404, { code: "NOT_FOUND" })
   })
@@ -66,6 +69,8 @@ test("uploadApk goes through presign, PUT and register", async () => {
     })
     const app = await api.uploadApk(join(dir, "app-debug.apk"))
     assert.equal(app.slug, "checkout")
+    // The release this upload stored, not the app's highest versionCode.
+    assert.deepEqual(app.build, { version: "1.2.0", versionCode: 7 })
     assert.deepEqual(seen.presign, { filename: "app-debug.apk", size: 2048 })
     assert.equal(seen.put, 2048)
     assert.deepEqual(seen.register, { key: "tenant/app.apk", filename: "app-debug.apk" })

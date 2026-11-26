@@ -926,3 +926,61 @@ test("the install hint checks minSdk and arm64, not debuggable", async () => {
   assert.match(hint, /arm64/);
   assert.doesNotMatch(hint, /debuggable/);
 });
+
+test("a run installs the release it uploaded, not the app's highest versionCode", async () => {
+  // VLC ships one APK per ABI with the ABI in its versionCode: after an x86
+  // upload (13070207) the app's current build stayed x86, so an arm64 upload
+  // (13070206) that only named the app ran x86 and failed on the ABI.
+  const dir = mkdtempSync(join(tmpdir(), "spawndroid-named-build-"));
+  writeFileSync(join(dir, "vlc-arm64.apk"), Buffer.alloc(8, 1));
+  const lines = [];
+  let fields = null;
+  const { api } = stubApi({
+    uploadApk: async () => ({
+      slug: "vlc-2",
+      version: "3.7.2",
+      versionCode: 13070207,
+      build: { version: "3.7.2", versionCode: 13070206 },
+    }),
+    createSession: async (sent) => {
+      fields = sent;
+      return { sessionId: "sess_named" };
+    },
+    getSession: async () => ({ state: "failed", errorCode: "DEVICE_BOOT_TIMEOUT" }),
+  });
+  await executeRun({
+    spec: baseSpec({ app: "vlc-arm64.apk" }),
+    specDir: dir,
+    api,
+    env: {},
+    log: (line) => lines.push(line),
+    ...fast,
+  });
+  assert.equal(fields.artifactId, "vlc-2");
+  assert.equal(fields.versionCode, 13070206);
+  assert.ok(lines.includes("uploaded vlc-2 v3.7.2 (13070206)"), lines.join("\n"));
+});
+
+test("an upload answer without a build (an older console) names only the app", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "spawndroid-unnamed-build-"));
+  writeFileSync(join(dir, "app.apk"), Buffer.alloc(8, 1));
+  let fields = null;
+  const { api } = stubApi({
+    uploadApk: async () => ({ slug: "app", version: "1.0" }),
+    createSession: async (sent) => {
+      fields = sent;
+      return { sessionId: "sess_old" };
+    },
+    getSession: async () => ({ state: "failed", errorCode: "DEVICE_BOOT_TIMEOUT" }),
+  });
+  await executeRun({
+    spec: baseSpec({ app: "app.apk" }),
+    specDir: dir,
+    api,
+    env: {},
+    log: quiet,
+    ...fast,
+  });
+  assert.equal(fields.artifactId, "app");
+  assert.equal("versionCode" in fields, false);
+});

@@ -125,6 +125,15 @@ export function createApi({
     }
   }
 
+  /**
+   * The app plus the release this upload stored (`build`). The app's own
+   * versionCode is its current build, the highest one, which need not be the
+   * upload: per-ABI APKs carry the ABI in their versionCode.
+   */
+  function withBuild(body) {
+    return body?.app ? { ...body.app, build: body.build ?? null } : body?.app
+  }
+
   async function uploadApkSteps(file, github) {
     const bytes = await readFile(file)
     const filename = basename(file)
@@ -143,7 +152,7 @@ export function createApi({
         const form = new FormData()
         form.append("file", new Blob([bytes]), filename)
         const body = await request("/api/apps", { method: "POST", body: form })
-        return body?.app
+        return withBuild(body)
       }
       throw error
     }
@@ -161,7 +170,7 @@ export function createApi({
         ...(github ? { github } : {}),
       }),
     })
-    return body?.app
+    return withBuild(body)
   }
 
   return {

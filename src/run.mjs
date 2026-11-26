@@ -321,6 +321,7 @@ export async function executeRun({
     const app = await resolveApp({ spec, specDir, api, log, env });
     const fields = {
       artifactId: app.artifactId,
+      ...(app.versionCode != null ? { versionCode: app.versionCode } : {}),
       ...(spec.profile ? { profileId: spec.profile } : {}),
       ...ciCoords(env),
     };
@@ -481,10 +482,20 @@ async function resolveApp({ spec, specDir, api, log, env }) {
     if (!uploaded?.slug) {
       throw new InfraError("the upload response did not include an app slug");
     }
+    // Name the release just uploaded: the app's current build is its highest
+    // versionCode, which another upload (another ABI) may hold.
+    const build = uploaded.build ?? null;
+    const version = build?.version ?? uploaded.version;
     log(
-      `uploaded ${uploaded.slug}${uploaded.version ? ` v${uploaded.version}` : ""}`,
+      `uploaded ${uploaded.slug}${version ? ` v${version}` : ""}${
+        build?.versionCode != null ? ` (${build.versionCode})` : ""
+      }`,
     );
-    return { artifactId: uploaded.slug, slug: uploaded.slug };
+    return {
+      artifactId: uploaded.slug,
+      slug: uploaded.slug,
+      versionCode: build?.versionCode ?? null,
+    };
   }
   if (looksLikePath) {
     throw new InfraError(`APK not found: ${candidate}`, {
