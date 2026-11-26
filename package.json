@@ -13,7 +13,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test test/spawndroid.test.mjs test/config.test.mjs test/run.test.mjs test/check.test.mjs test/api.test.mjs test/reports.test.mjs"
+    "test": "node --test test/summary.test.mjs test/spawndroid.test.mjs test/config.test.mjs test/run.test.mjs test/check.test.mjs test/api.test.mjs test/reports.test.mjs"
   },
   "license": "MIT",
   "repository": {

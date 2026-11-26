@@ -96,6 +96,11 @@ Without it, `run` looks where the build tools write reports —
 module) and `target/surefire-reports/` (Maven) — and attaches only the files
 your command wrote during this run. Several files are merged into one report.
 
+With no JUnit report at all, `run` reads the closing summary your test runner
+prints (Jest, Vitest, Mocha and WebdriverIO, pytest, unittest, Gradle, Maven,
+Robot Framework) and sends the counts and any failing test names it names, so
+the run page still shows what passed and what failed.
+
 ## Commands
 
 ```bash

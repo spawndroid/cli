@@ -198,11 +198,12 @@ export function createApi({
       return request(`/api/v1/sessions/${encodeURIComponent(id)}`)
     },
 
-    async endSession(id, result) {
+    /** `extra`: optional fields for the run, such as the output `summary`. */
+    async endSession(id, result, extra = {}) {
       return request(`/api/v1/sessions/${encodeURIComponent(id)}`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ result }),
+        body: JSON.stringify({ result, ...extra }),
       })
     },
 
