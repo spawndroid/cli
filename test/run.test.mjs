@@ -961,6 +961,30 @@ test("a run installs the release it uploaded, not the app's highest versionCode"
   assert.ok(lines.includes("uploaded vlc-2 v3.7.2 (13070206)"), lines.join("\n"));
 });
 
+test("a versionName that already starts with v is not prefixed twice", async () => {
+  // Twine's versionName is "v3.10.0-FOSS"; the log printed "vv3.10.0-FOSS".
+  const dir = mkdtempSync(join(tmpdir(), "spawndroid-v-version-"));
+  writeFileSync(join(dir, "twine.apk"), Buffer.alloc(8, 1));
+  const lines = [];
+  const { api } = stubApi({
+    uploadApk: async () => ({
+      slug: "twine",
+      build: { version: "v3.10.0-FOSS", versionCode: 310 },
+    }),
+    createSession: async () => ({ sessionId: "sess_twine" }),
+    getSession: async () => ({ state: "failed", errorCode: "DEVICE_BOOT_TIMEOUT" }),
+  });
+  await executeRun({
+    spec: baseSpec({ app: "twine.apk" }),
+    specDir: dir,
+    api,
+    env: {},
+    log: (line) => lines.push(line),
+    ...fast,
+  });
+  assert.ok(lines.includes("uploaded twine v3.10.0-FOSS (310)"), lines.join("\n"));
+});
+
 test("an upload answer without a build (an older console) names only the app", async () => {
   const dir = mkdtempSync(join(tmpdir(), "spawndroid-unnamed-build-"));
   writeFileSync(join(dir, "app.apk"), Buffer.alloc(8, 1));

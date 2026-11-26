@@ -487,7 +487,7 @@ async function resolveApp({ spec, specDir, api, log, env }) {
     const build = uploaded.build ?? null;
     const version = build?.version ?? uploaded.version;
     log(
-      `uploaded ${uploaded.slug}${version ? ` v${version}` : ""}${
+      `uploaded ${uploaded.slug}${version ? ` v${version.replace(/^v/i, "")}` : ""}${
         build?.versionCode != null ? ` (${build.versionCode})` : ""
       }`,
     );
