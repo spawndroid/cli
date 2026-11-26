@@ -6,7 +6,13 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import { createApi } from "../src/api.mjs";
-import { ciCoords, executeRun, jobSummary, pullRequestUpload } from "../src/run.mjs";
+import {
+  ciCoords,
+  executeRun,
+  jobSummary,
+  pullRequestUpload,
+  runnerLimitMessage,
+} from "../src/run.mjs";
 
 /**
  * A fake console: enough of the v1 shape that executeRun's real HTTP client
@@ -16,6 +22,7 @@ async function startConsole({
   createFailures = 0,
   createCode = "free_pool_full",
   createStatus = 429,
+  createBody = {},
   readyFailures = 0,
   readyPackage = "com.example",
   workspace = null,
@@ -69,6 +76,7 @@ async function startConsole({
         return send(state.createStatus, {
           code: state.createCode,
           detail: "not now",
+          ...createBody,
         });
       }
       return send(201, {
@@ -365,6 +373,131 @@ test("plan limits are not retried", async () => {
     });
     assert.equal(outcome.exitCode, 2);
     assert.equal(consoleState.creates.length, 1);
+  } finally {
+    await consoleState.close();
+  }
+});
+
+const NOW = Date.parse("2026-11-26T12:00:00.000Z");
+
+const RUNNER_LIMIT = {
+  createCode: "PLAN_RUNNER_LIMIT",
+  createBody: {
+    legacyCode: "concurrency",
+    limit: 1,
+    active: 1,
+    retryAfterMs: 120_000,
+    holders: [
+      {
+        sessionId: "sess_holder",
+        startedFrom: "ci",
+        build: { app: "Trail", appSlug: "trail", versionCode: 42 },
+        startedAt: "2026-11-26T11:48:00.000Z",
+        runningSeconds: 720,
+        stopsBy: "2026-11-26T19:48:00.000Z",
+        stopsByReason: "host_ceiling",
+        idleTimeoutSeconds: 900,
+      },
+    ],
+  },
+};
+
+test("a runner-limit message names the holder, when it frees and both options", () => {
+  const lines = runnerLimitMessage(RUNNER_LIMIT.createBody, {
+    baseUrl: "https://app.example",
+    now: NOW,
+  });
+  assert.deepEqual(lines, [
+    "runner limit reached: 1 of 1 runners busy",
+    "  held by sess_holder: Trail build 42, started from CI, running 12m, frees in 7h 48m at the latest, sooner if idle for 15m",
+    "  option 1, wait: rerun when it ends, or pass --wait-for-runner <seconds> (SPAWNDROID_WAIT_FOR_RUNNER) to retry automatically",
+    "  option 2, stop it: npx spawndroid report sess_holder --result failed, or Stop on https://app.example/dashboard/runs/sess_holder",
+  ]);
+});
+
+test("a runner-limit message from an older server still offers the options", () => {
+  const lines = runnerLimitMessage(
+    { code: "PLAN_RUNNER_LIMIT" },
+    { baseUrl: "https://app.example", now: NOW },
+  );
+  assert.equal(lines[0], "runner limit reached: every runner in this workspace is busy");
+  assert.equal(lines.at(-1), "  option 2, stop a running session on https://app.example/dashboard/runs");
+});
+
+test("a runner limit fails at once by default and says who holds the runner", async () => {
+  const consoleState = await startConsole({ createFailures: 1, ...RUNNER_LIMIT });
+  const logs = [];
+  try {
+    const api = createApi({ baseUrl: consoleState.root, apiKey: "test", serverErrorRetryMs: 0 });
+    const outcome = await executeRun({
+      spec: baseSpec(),
+      specDir: process.cwd(),
+      api,
+      log: (line) => logs.push(line),
+      now: () => NOW,
+      ...fast,
+    });
+    assert.equal(outcome.exitCode, 2);
+    assert.equal(consoleState.creates.length, 1);
+    assert.ok(logs.some((line) => line.includes("held by sess_holder: Trail build 42")));
+    assert.ok(logs.some((line) => line.includes("npx spawndroid report sess_holder --result failed")));
+  } finally {
+    await consoleState.close();
+  }
+});
+
+test("--wait-for-runner retries a runner limit with a fresh key until it frees", async () => {
+  const consoleState = await startConsole({ createFailures: 2, ...RUNNER_LIMIT });
+  const sleeps = [];
+  let clock = NOW;
+  try {
+    const api = createApi({ baseUrl: consoleState.root, apiKey: "test", serverErrorRetryMs: 0 });
+    const outcome = await executeRun({
+      spec: baseSpec(),
+      specDir: process.cwd(),
+      api,
+      log: quiet,
+      ...fast,
+      waitForRunnerSeconds: 600,
+      now: () => clock,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        clock += ms;
+      },
+    });
+    assert.equal(outcome.exitCode, 0);
+    assert.equal(consoleState.creates.length, 3);
+    // A refused key is settled as failed on the server, so each retry needs a new one.
+    assert.equal(new Set(consoleState.creates.map((create) => create.key)).size, 3);
+    // Retry-After is two minutes, but a holder can end early: poll at most every 30s.
+    assert.deepEqual(sleeps.slice(0, 2), [30_000, 30_000]);
+  } finally {
+    await consoleState.close();
+  }
+});
+
+test("--wait-for-runner gives up when the budget runs out", async () => {
+  const consoleState = await startConsole({ createFailures: 100, ...RUNNER_LIMIT });
+  let clock = NOW;
+  const logs = [];
+  try {
+    const api = createApi({ baseUrl: consoleState.root, apiKey: "test", serverErrorRetryMs: 0 });
+    const outcome = await executeRun({
+      spec: baseSpec(),
+      specDir: process.cwd(),
+      api,
+      log: (line) => logs.push(line),
+      ...fast,
+      waitForRunnerSeconds: 45,
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+      },
+    });
+    assert.equal(outcome.exitCode, 2);
+    // 30s, then the 15s that is left, then one last refusal.
+    assert.equal(consoleState.creates.length, 3);
+    assert.ok(logs.some((line) => line.includes("no runner freed up within 45s")));
   } finally {
     await consoleState.close();
   }

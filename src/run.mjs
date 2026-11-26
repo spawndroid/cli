@@ -46,6 +46,72 @@ export class InfraError extends Error {
   }
 }
 
+/** The plan's parallel-runner limit: every runner is busy in this workspace. */
+const RUNNER_LIMIT_CODES = new Set(["PLAN_RUNNER_LIMIT", "concurrency"]);
+
+/** How often `--wait-for-runner` asks again, whatever Retry-After says. */
+const RUNNER_POLL_MIN_MS = 5_000;
+const RUNNER_POLL_MAX_MS = 30_000;
+
+function isRunnerLimit(error) {
+  return (
+    error?.status === 429 &&
+    (RUNNER_LIMIT_CODES.has(error.code) || RUNNER_LIMIT_CODES.has(error.legacyCode))
+  );
+}
+
+/** `42s`, `12m`, `7h 36m`. */
+function formatSeconds(total) {
+  const seconds = Math.max(0, Math.round(total));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const rest = minutes % 60;
+  return rest ? `${Math.floor(minutes / 60)}h ${rest}m` : `${Math.floor(minutes / 60)}h`;
+}
+
+const ORIGIN_LABEL = {
+  ci: "CI",
+  api: "the API",
+  dashboard: "the dashboard",
+  share_link: "a share link",
+};
+
+/**
+ * What a runner-limit 429 means for this run, as lines a person can act on:
+ * which session holds the runner, how long until it frees, and the two ways
+ * out. Servers older than the `holders` field still get the options.
+ */
+export function runnerLimitMessage(body, { baseUrl, now = Date.now() } = {}) {
+  const holders = Array.isArray(body?.holders) ? body.holders : [];
+  const lines = [
+    typeof body?.active === "number" && typeof body?.limit === "number"
+      ? `runner limit reached: ${body.active} of ${body.limit} runners busy`
+      : "runner limit reached: every runner in this workspace is busy",
+  ];
+  for (const holder of holders) {
+    const build =
+      holder.build?.versionCode != null
+        ? `${holder.build.app} build ${holder.build.versionCode}`
+        : (holder.build?.app ?? "unknown build");
+    const freesIn = formatSeconds((Date.parse(holder.stopsBy) - now) / 1000);
+    const idle = holder.idleTimeoutSeconds
+      ? `, sooner if idle for ${formatSeconds(holder.idleTimeoutSeconds)}`
+      : "";
+    lines.push(
+      `  held by ${holder.sessionId}: ${build}, started from ${ORIGIN_LABEL[holder.startedFrom] ?? holder.startedFrom}, running ${formatSeconds(holder.runningSeconds)}, frees in ${freesIn} at the latest${idle}`,
+    );
+  }
+  const first = holders[0]?.sessionId;
+  lines.push(
+    "  option 1, wait: rerun when it ends, or pass --wait-for-runner <seconds> (SPAWNDROID_WAIT_FOR_RUNNER) to retry automatically",
+    first
+      ? `  option 2, stop it: npx spawndroid report ${first} --result failed, or Stop on ${baseUrl}/dashboard/runs/${first}`
+      : `  option 2, stop a running session on ${baseUrl}/dashboard/runs`,
+  );
+  return lines;
+}
+
 /** 429s that are plan limits, not transient capacity: retrying cannot help. */
 const PLAN_CODES = new Set([
   "PLAN_RUNNER_LIMIT",
@@ -212,7 +278,10 @@ export async function executeRun({
   pollMs = 5000,
   retryDelayMs = 45_000,
   maxAttempts = 3,
+  /** Wait this long for a busy runner to free up; 0 fails at once. */
+  waitForRunnerSeconds = 0,
   sleep = (ms) => new Promise((done) => setTimeout(done, ms)),
+  now = () => Date.now(),
   spawnImpl = spawn,
 }) {
   let sessionId = null;
@@ -250,7 +319,6 @@ export async function executeRun({
       log(`workspace ${workspace.name} (${workspace.slug}) — ${api.baseUrl}/dashboard/runs`);
     }
     const app = await resolveApp({ spec, specDir, api, log, env });
-    const idempotencyKey = `spawndroid-${randomUUID()}`;
     const fields = {
       artifactId: app.artifactId,
       ...(spec.profile ? { profileId: spec.profile } : {}),
@@ -260,10 +328,11 @@ export async function executeRun({
     const started = await createWithCapacityRetry({
       api,
       fields,
-      idempotencyKey,
       maxAttempts,
       retryDelayMs,
+      waitForRunnerSeconds,
       sleep,
+      now,
       log,
     }).catch((error) => {
       const infra = toInfra(error);
@@ -428,16 +497,52 @@ async function resolveApp({ spec, specDir, api, log, env }) {
 async function createWithCapacityRetry({
   api,
   fields,
-  idempotencyKey,
   maxAttempts,
   retryDelayMs,
+  waitForRunnerSeconds,
   sleep,
+  now,
   log,
 }) {
+  // A capacity retry reuses the key (nothing was created); a runner-limit
+  // refusal settles the key as failed, so waiting for a runner needs a new one.
+  let idempotencyKey = `spawndroid-${randomUUID()}`;
+  const runnerDeadline = now() + waitForRunnerSeconds * 1000;
   for (let attempt = 1; ; attempt += 1) {
     try {
       return await api.createSession(fields, idempotencyKey);
     } catch (error) {
+      if (isRunnerLimit(error)) {
+        for (const line of runnerLimitMessage(error.body, { baseUrl: api.baseUrl, now: now() })) {
+          log(line);
+        }
+        const left = runnerDeadline - now();
+        if (left <= 0) {
+          throw new InfraError(
+            waitForRunnerSeconds > 0
+              ? `no runner freed up within ${waitForRunnerSeconds}s: ${error.message}`
+              : error.message,
+            {
+              code: error.code ?? error.legacyCode ?? null,
+              status: error.status,
+              requestId: error.requestId ?? null,
+              hint: "wait for the session above to end, or stop it",
+            },
+          );
+        }
+        const delay = Math.min(
+          left,
+          Math.max(
+            RUNNER_POLL_MIN_MS,
+            Math.min(Number(error.body?.retryAfterMs) || RUNNER_POLL_MAX_MS, RUNNER_POLL_MAX_MS),
+          ),
+        );
+        log(`waiting for a runner: retrying in ${formatSeconds(delay / 1000)} (${formatSeconds(left / 1000)} left)`);
+        await sleep(delay);
+        idempotencyKey = `spawndroid-${randomUUID()}`;
+        attempt -= 1;
+        continue;
+      }
       const planLimit =
         error?.status === 429 &&
         (PLAN_CODES.has(error.code) || PLAN_CODES.has(error.legacyCode));

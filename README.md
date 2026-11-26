@@ -106,7 +106,7 @@ the run page still shows what passed and what failed.
 ```bash
 spawndroid init     [--app <apk>] [--command <cmd>] [--report <xml>] [--profile <id>] [--force]
 spawndroid check    [--config <path>]
-spawndroid run      [--config <path>] [--profile <id>] [--timeout <s>] [-- <command…>]
+spawndroid run      [--config <path>] [--profile <id>] [--timeout <s>] [--wait-for-runner <s>] [-- <command…>]
 spawndroid upload   <app.apk> [--json]
 spawndroid start    --app <slug> [--profile <id>] [--json]
 spawndroid wait     <sessionId> [--timeout <s>] [--json]
@@ -119,6 +119,11 @@ spawndroid report   <sessionId> --result passed|failed
    `Idempotency-Key`.
 2. Retries a *capacity* `429` up to 3 attempts over ~90 s; plan limits
    (`PLAN_RUNNER_LIMIT`, `PLAN_DEVICE_MINUTES_EXHAUSTED`) fail immediately.
+   On `PLAN_RUNNER_LIMIT` it prints the session holding the runner, how long
+   until it frees at the latest, and how to stop it. Pass
+   `--wait-for-runner <seconds>` (or set `SPAWNDROID_WAIT_FOR_RUNNER`, or the
+   action's `wait-for-runner` input) to keep retrying, every 30 s at most,
+   until a runner frees up or the time runs out. Off by default.
 3. Waits up to `timeout` for the device, then pushes fixtures.
 4. Runs `command` locally on the runner with the session in its environment.
 5. Attaches the JUnit report (found automatically unless `report` names it),

@@ -38,7 +38,8 @@ const HELP = `spawndroid — run Android tests on hosted devices
 Usage:
   spawndroid init [--app <apk>] [--command <cmd>] [--report <xml>] [--profile <id>]
   spawndroid check [--config <path>]
-  spawndroid run [--config <path>] [--profile <id>] [--timeout <seconds>] [-- <command…>]
+  spawndroid run [--config <path>] [--profile <id>] [--timeout <seconds>]
+                 [--wait-for-runner <seconds>] [-- <command…>]
   spawndroid upload <app.apk> [--json]
   spawndroid start --app <slug> [--profile <id>] [--json]
   spawndroid wait <sessionId> [--timeout <seconds>] [--json]
@@ -49,6 +50,8 @@ Environment:
   SPAWNDROID_API_KEY   workspace API key with upload scope (required)
   SPAWNDROID_URL       console origin (default https://app.spawndroid.io)
   SPAWNDROID_CONFIG    spec path (default spawndroid.yaml)
+  SPAWNDROID_WAIT_FOR_RUNNER
+                       seconds \`run\` waits for a busy runner to free up (default 0, off)
 
 Exit codes:
   0 tests passed   1 tests failed   2 infrastructure or setup failed
@@ -185,9 +188,16 @@ async function main() {
       config: { type: "string" },
       profile: { type: "string" },
       timeout: { type: "string" },
+      "wait-for-runner": { type: "string" },
     })
     if (!parsed.ok) return fail(parsed.error.message)
     const { values, positionals } = parsed.value
+    const waitForRunner =
+      values["wait-for-runner"] ?? process.env.SPAWNDROID_WAIT_FOR_RUNNER?.trim() ?? ""
+    const waitForRunnerSeconds = waitForRunner === "" ? 0 : Number(waitForRunner)
+    if (!Number.isInteger(waitForRunnerSeconds) || waitForRunnerSeconds < 0) {
+      return fail("--wait-for-runner must be whole seconds, 0 or more")
+    }
 
     let spec
     let specDir
@@ -215,7 +225,7 @@ async function main() {
       if (commandArgs.length > 0) spec.command = commandArgs
     }
 
-    const outcome = await executeRun({ spec, specDir, api: api() })
+    const outcome = await executeRun({ spec, specDir, api: api(), waitForRunnerSeconds })
     await writeGitHubOutputs(outcome)
     await writeJobSummary(outcome)
     if (outcome.runUrl) console.error(`run: ${outcome.runUrl}`)
