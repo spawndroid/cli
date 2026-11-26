@@ -524,6 +524,60 @@ test("no summary without a run, and no workspace line when unknown", () => {
   assert.doesNotMatch(md, /Workspace/);
 });
 
+test("without a JUnit report, the runner's closing count goes with the result", async () => {
+  const consoleState = await startConsole();
+  const dir = mkdtempSync(join(tmpdir(), "spawndroid-summary-"));
+  try {
+    const api = createApi({ baseUrl: consoleState.root, apiKey: "test" });
+    const outcome = await executeRun({
+      spec: baseSpec({
+        command: [
+          process.execPath,
+          "-e",
+          "console.log('FAILED tests/test_login.py::test_login - AssertionError'); console.log('==== 1 failed, 4 passed in 3.10s ===='); process.exit(1)",
+        ],
+      }),
+      specDir: dir,
+      api,
+      log: quiet,
+      ...fast,
+    });
+    assert.equal(outcome.exitCode, 1);
+    assert.deepEqual(consoleState.ends.at(-1), {
+      result: "failed",
+      summary: {
+        runner: "pytest",
+        passed: 4,
+        failed: 1,
+        skipped: 0,
+        failing: ["tests/test_login.py::test_login"],
+      },
+    });
+  } finally {
+    await consoleState.close();
+  }
+});
+
+test("a command with no recognisable summary ends with the result alone", async () => {
+  const consoleState = await startConsole();
+  const dir = mkdtempSync(join(tmpdir(), "spawndroid-summary-"));
+  try {
+    const api = createApi({ baseUrl: consoleState.root, apiKey: "test" });
+    await executeRun({
+      spec: baseSpec({
+        command: [process.execPath, "-e", "console.log('all good')"],
+      }),
+      specDir: dir,
+      api,
+      log: quiet,
+      ...fast,
+    });
+    assert.deepEqual(consoleState.ends.at(-1), { result: "passed" });
+  } finally {
+    await consoleState.close();
+  }
+});
+
 /** An API whose calls are scripted per test; records attempts and ends. */
 function stubApi(overrides = {}) {
   const calls = { attempts: [], ends: [] };

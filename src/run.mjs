@@ -14,6 +14,7 @@ import { basename, relative, resolve } from "node:path";
 
 import { DEVICE_FILE_MAX_BYTES } from "./config.mjs";
 import { collectReports, mergeJUnit } from "./reports.mjs";
+import { outputTail, parseTestSummary } from "./summary.mjs";
 
 export const EXIT_PASSED = 0;
 export const EXIT_TESTS_FAILED = 1;
@@ -220,11 +221,11 @@ export async function executeRun({
   const childRef = { current: null };
   const runUrl = (id) => (id ? `${api.baseUrl}/dashboard/runs/${id}` : null);
 
-  const teardown = async (result) => {
+  const teardown = async (result, extra = {}) => {
     if (!sessionId || ended) return;
     ended = true;
     try {
-      await api.endSession(sessionId, result);
+      await api.endSession(sessionId, result, extra);
     } catch (error) {
       log(`warning: could not close session ${sessionId}: ${error.message}`);
     }
@@ -289,7 +290,7 @@ export async function executeRun({
 
     // Reports written from here on belong to this run; older ones are stale.
     const commandStartedAt = Date.now()
-    const { code, signal, spawnError } = await runCommand({
+    const { code, signal, spawnError, output } = await runCommand({
       view,
       createView: started,
       appSlug: app.slug,
@@ -321,7 +322,7 @@ export async function executeRun({
     // Attach before teardown: the report route accepts a POST after the run
     // ends, but a report that lands while the session is still open cannot
     // race a teardown, and a failure here is a warning, never a lost verdict.
-    await attachReport({
+    const attached = await attachReport({
       api,
       sessionId,
       report: spec.report,
@@ -329,7 +330,15 @@ export async function executeRun({
       since: commandStartedAt,
       log,
     });
-    await teardown(result);
+    // No JUnit report: the runner's own closing count still says how many
+    // checks passed and which failed, so the run page is not just a verdict.
+    const summary = attached ? null : parseTestSummary(output);
+    if (summary) {
+      log(
+        `summary from ${summary.runner} output: ${summary.passed} passed, ${summary.failed} failed`,
+      );
+    }
+    await teardown(result, summary ? { summary } : {});
     return {
       exitCode: code === 0 ? EXIT_PASSED : EXIT_TESTS_FAILED,
       sessionId,
@@ -524,22 +533,36 @@ function runCommand({
   childRef,
 }) {
   return new Promise((done) => {
+    // stdout and stderr are piped through, not inherited, so the end of the
+    // output can be read for the runner's summary. Everything is still
+    // written to the job log as it arrives.
+    const tail = outputTail();
     const child = spawnImpl(argv[0], argv.slice(1), {
-      stdio: "inherit",
+      stdio: ["inherit", "pipe", "pipe"],
       // The suite runs from the directory the spec lives in, so `./gradlew`
       // and relative report paths resolve even when `--config` points elsewhere.
       cwd,
       env: { ...env, ...sessionEnv(view, appSlug, sessionId, createView) },
     });
     childRef.current = child;
+    child.stdout?.on("data", (chunk) => {
+      process.stdout.write(chunk);
+      tail.push(chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      process.stderr.write(chunk);
+      tail.push(chunk);
+    });
     child.on("error", (error) => {
       log(`could not start the test command: ${error.message}`);
       childRef.current = null;
-      done({ code: null, signal: null, spawnError: true });
+      done({ code: null, signal: null, spawnError: true, output: tail.text() });
     });
-    child.on("exit", (code, signal) => {
+    // `close`, not `exit`: the pipes may still hold the last lines (the
+    // summary) when the process exits.
+    child.on("close", (code, signal) => {
       childRef.current = null;
-      done({ code, signal, spawnError: false });
+      done({ code, signal, spawnError: false, output: tail.text() });
     });
   });
 }
@@ -556,14 +579,14 @@ async function attachReport({ api, sessionId, report, specDir, since, log }) {
   const files = await collectReports({ dir: specDir, report, since });
   if (files.length === 0) {
     if (report) log(`warning: no JUnit report at ${report} — attach skipped`);
-    return;
+    return false;
   }
   const documents = [];
   for (const file of files) {
     const xml = await readFile(file, "utf8").catch(() => null);
     if (xml?.trim()) documents.push(xml);
   }
-  if (documents.length === 0) return;
+  if (documents.length === 0) return false;
   const xml = mergeJUnit(documents);
   const label =
     documents.length === 1
@@ -571,12 +594,14 @@ async function attachReport({ api, sessionId, report, specDir, since, log }) {
       : `${documents.length} JUnit files`;
   if (Buffer.byteLength(xml, "utf8") > MAX_REPORT_BYTES) {
     log(`warning: ${label} exceed the 8 MB report limit — attach skipped`);
-    return;
+    return false;
   }
   try {
     await api.postReport(sessionId, xml);
     log(`attached ${label}`);
+    return true;
   } catch (error) {
     log(`warning: could not attach ${label}: ${error.message}`);
+    return false;
   }
 }
