@@ -10,8 +10,19 @@ import { readFile } from "node:fs/promises"
 import { basename } from "node:path"
 import { randomUUID } from "node:crypto"
 
+/**
+ * The id a user can quote for a failed request: the console's problem body
+ * carries it, the console also sets `x-request-id`, and a platform error page
+ * (no JSON body) still has the edge's `x-vercel-id`.
+ */
+function requestIdOf(body, headers) {
+  const fromBody = body?.requestId ?? body?.["spawndroid:requestId"]
+  if (typeof fromBody === "string" && fromBody) return fromBody
+  return headers?.get?.("x-request-id") || headers?.get?.("x-vercel-id") || null
+}
+
 export class ApiError extends Error {
-  constructor(status, body, path) {
+  constructor(status, body, path, headers = null) {
     const raw = body && (body.detail || body.error || body.title)
     // `detail` is usually a string but can be an object from a proxy or a
     // validation layer; never let an error message read "[object Object]".
@@ -21,8 +32,13 @@ export class ApiError extends Error {
         : raw
           ? JSON.stringify(raw)
           : `HTTP ${status}`
-    super(`${status} ${detail}`)
+    const requestId = requestIdOf(body, headers)
+    // A 5xx is ours to fix; the id is what support needs to find it.
+    super(
+      `${status} ${detail}${status >= 500 && requestId ? ` (request id ${requestId})` : ""}`
+    )
     this.name = "ApiError"
+    this.requestId = requestId
     this.status = status
     this.code = body?.code ?? null
     this.legacyCode = body?.legacyCode ?? null
@@ -38,11 +54,30 @@ export function createApi({
   // which clients attach test reports; Node's default agent is just "node".
   userAgent = "spawndroid-cli",
   fetchImpl = globalThis.fetch,
+  // One retry after a 5xx: a cold function or a host restart usually
+  // answers the second time, and every call here is safe to repeat (session
+  // creates carry an Idempotency-Key, uploads re-register the same object).
+  serverErrorRetryMs = 2_000,
+  sleep = (ms) => new Promise((done) => setTimeout(done, ms)),
 }) {
   const root = baseUrl.replace(/\/$/, "")
   const agent = `${userAgent} node/${process.versions.node}`
 
-  async function request(path, init = {}) {
+  async function once5xx(call) {
+    try {
+      return await call()
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.status < 500) throw error
+      await sleep(serverErrorRetryMs)
+      return call()
+    }
+  }
+
+  function request(path, init = {}) {
+    return once5xx(() => requestOnce(path, init))
+  }
+
+  async function requestOnce(path, init = {}) {
     const headers = {
       Accept: "application/json",
       "User-Agent": agent,
@@ -62,11 +97,15 @@ export function createApi({
     }
     if (response.status === 204) return null
     const body = await response.json().catch(() => null)
-    if (!response.ok) throw new ApiError(response.status, body, path)
+    if (!response.ok) throw new ApiError(response.status, body, path, response.headers)
     return body
   }
 
-  async function putFile(url, bytes, contentType) {
+  function putFile(url, bytes, contentType) {
+    return once5xx(() => putFileOnce(url, bytes, contentType))
+  }
+
+  async function putFileOnce(url, bytes, contentType) {
     let response
     try {
       response = await fetchImpl(url, {
@@ -81,7 +120,48 @@ export function createApi({
         "presigned PUT"
       )
     }
-    if (!response.ok) throw new ApiError(response.status, null, "presigned PUT")
+    if (!response.ok) {
+      throw new ApiError(response.status, null, "presigned PUT", response.headers)
+    }
+  }
+
+  async function uploadApkSteps(file, github) {
+    const bytes = await readFile(file)
+    const filename = basename(file)
+    // The bytes go straight to object storage: the console sits behind a
+    // serverless function whose request body is capped well below a real
+    // APK, so multipart only survives as a local-dev fallback.
+    let presigned
+    try {
+      presigned = await request("/api/apps/presign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename, size: bytes.length }),
+      })
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 503) {
+        const form = new FormData()
+        form.append("file", new Blob([bytes]), filename)
+        const body = await request("/api/apps", { method: "POST", body: form })
+        return body?.app
+      }
+      throw error
+    }
+    await putFile(
+      presigned.url,
+      bytes,
+      presigned.contentType ?? "application/octet-stream"
+    )
+    const body = await request("/api/apps", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        key: presigned.key,
+        filename,
+        ...(github ? { github } : {}),
+      }),
+    })
+    return body?.app
   }
 
   return {
@@ -145,42 +225,33 @@ export function createApi({
 
     /** `github` (optional): the pull request the build comes from. */
     async uploadApk(file, github = null) {
-      const bytes = await readFile(file)
-      const filename = basename(file)
-      // The bytes go straight to object storage: the console sits behind a
-      // serverless function whose request body is capped well below a real
-      // APK, so multipart only survives as a local-dev fallback.
-      let presigned
       try {
-        presigned = await request("/api/apps/presign", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ filename, size: bytes.length }),
-        })
+        return await uploadApkSteps(file, github)
       } catch (error) {
-        if (error instanceof ApiError && error.status === 503) {
-          const form = new FormData()
-          form.append("file", new Blob([bytes]), filename)
-          const body = await request("/api/apps", { method: "POST", body: form })
-          return body?.app
+        // Which step stopped, for the failed-attempt report: anything before
+        // the bytes are stored is the upload, the rest is the registration.
+        if (error instanceof ApiError && !error.attemptPhase) {
+          error.attemptPhase = error.path === "/api/apps" ? "register" : "upload"
         }
         throw error
       }
-      await putFile(
-        presigned.url,
-        bytes,
-        presigned.contentType ?? "application/octet-stream"
-      )
-      const body = await request("/api/apps", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          key: presigned.key,
-          filename,
-          ...(github ? { github } : {}),
-        }),
-      })
-      return body?.app
+    },
+
+    /**
+     * Tell the console a run failed before it had a session, so the Runs
+     * page can show it. Identifiers only; best effort, never throws.
+     */
+    async reportAttempt(attempt) {
+      try {
+        await requestOnce("/api/v1/runs/attempts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(attempt),
+        })
+        return true
+      } catch {
+        return false
+      }
     },
 
     async createSession(fields, idempotencyKey) {
