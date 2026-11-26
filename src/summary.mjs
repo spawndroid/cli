@@ -262,3 +262,52 @@ export function outputTail(limit = OUTPUT_TAIL_BYTES) {
     },
   };
 }
+
+/** Closing counts and build-tool wrappers: they say "failed", never why. */
+const NOT_A_CAUSE = [
+  /^(Tests|Test Suites|Snapshots|Time):/,
+  /^\s*Test(s| Files)\s+\d+/,
+  /^\s*\d+ (passing|failing|pending)\b/,
+  /^=+ .* =+$/,
+  /\d+ tests? completed/,
+  /^(\[\w+\]\s+)?Tests run:/,
+  /^Ran \d+ tests? in/,
+  /^(FAILED|OK)( \(.*\))?$/,
+  /^Spec Files:/,
+  /^\d+ tests?, \d+ passed/,
+  /^(FAILURE: )?Build failed with an exception/i,
+  /^BUILD FAIL(ED|URE)/,
+  /^\[ERROR\] (Failed to execute goal|BUILD FAILURE|-> \[Help|Re-run Maven|For more information|To see the full stack)/,
+  /^npm (ERR!|error)/,
+  /^(error )?Command failed with exit code/i,
+  /ELIFECYCLE/,
+  /^Error: Process completed with exit code/,
+  /^\* (What went wrong|Try):/,
+  /^> There were failing tests/,
+  /^Execution failed for task/,
+  /^(FAILED|ERROR) \S+::\S+$/,
+];
+
+// "Error" and "Exception" end class names (NoSuchElementError), so they need
+// no word boundary on the left.
+const CAUSE = /(error|exception)\b|\b(assert(ion)?|fail(ed|ure)?|fatal|traceback|timed? ?out|not found|refused|denied|unable to|cannot|could not)\b/i;
+
+/** How far back from the end of the output a cause is looked for. */
+const CAUSE_WINDOW_LINES = 400;
+
+/**
+ * The last line of the output that names a cause, such as an assertion or a
+ * driver error, skipping the runner's closing counts and the build tool's
+ * "build failed" wrapper. Null when no line reads like one.
+ */
+export function lastErrorLine(output, maxChars = 300) {
+  if (!output) return null;
+  const lines = stripAnsi(output).split("\n").slice(-CAUSE_WINDOW_LINES);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i].trim();
+    if (!line || !CAUSE.test(line)) continue;
+    if (NOT_A_CAUSE.some((pattern) => pattern.test(line))) continue;
+    return line.replace(/\s+/g, " ").slice(0, maxChars);
+  }
+  return null;
+}
