@@ -27,7 +27,7 @@ jobs:
           distribution: temurin
           java-version: 17
       - run: ./gradlew assembleDebug
-      - uses: spawndroid/cli@v0.1.11
+      - uses: spawndroid/cli@v0.1.12
         id: spawndroid
         with:
           api-key: ${{ secrets.SPAWNDROID_API_KEY }}
