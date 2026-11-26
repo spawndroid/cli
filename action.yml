@@ -22,7 +22,7 @@ inputs:
   version:
     description: CLI version to run.
     required: false
-    default: "0.1.8"
+    default: "0.1.9"
 
 outputs:
   session-id:
