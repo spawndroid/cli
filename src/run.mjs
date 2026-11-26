@@ -134,7 +134,7 @@ function isTransient(error) {
 export function remediationFor(code) {
   if (!code) return null;
   if (code.startsWith("INSTALL_") || code.startsWith("AAB_")) {
-    return "the build failed to install — check minSdk, that it targets arm64, and that the APK is debuggable";
+    return "the build failed to install — check minSdk and that it includes arm64 libraries";
   }
   switch (code) {
     case "DEVICE_BOOT_TIMEOUT":
@@ -606,8 +606,10 @@ async function waitForReady({
     }
     if (view?.state === "ready") return view;
     if (view?.state === "failed") {
+      // The same words the run page shows: its title, then the message.
+      const cause = [view.errorTitle, view.error].filter(Boolean).join(": ");
       throw new InfraError(
-        `session failed: ${view.errorCode ?? view.error ?? "unknown"}`,
+        `session failed: ${cause || view.errorCode || "unknown"}`,
         {
           code: view.errorCode ?? null,
           phase: view.errorPhase ?? null,

@@ -884,3 +884,45 @@ test("a failure after the session exists is not reported as an attempt", async (
   assert.equal(calls.attempts.length, 0);
   assert.deepEqual(calls.ends, [{ id: "sess_9", result: "failed" }]);
 });
+
+test("an install failure names its cause and never reaches the test command", async () => {
+  const lines = [];
+  let spawned = false;
+  const { api } = stubApi({
+    createSession: async () => ({ sessionId: "sess_abi" }),
+    getSession: async () => ({
+      state: "failed",
+      errorCode: "INSTALL_NO_MATCHING_ABI",
+      errorPhase: "install",
+      errorTitle: "Install failed: no arm64 libraries",
+      error:
+        "Spawndroid devices are arm64; this APK contains only other architectures.",
+    }),
+  });
+  const outcome = await executeRun({
+    spec: baseSpec(),
+    specDir: tmpdir(),
+    api,
+    env: {},
+    log: (line) => lines.push(line),
+    ...fast,
+    spawnImpl: () => {
+      spawned = true;
+      throw new Error("the test command must not run");
+    },
+  });
+  assert.equal(outcome.exitCode, 2);
+  assert.equal(spawned, false);
+  const text = lines.join("\n");
+  assert.match(text, /Install failed: no arm64 libraries/);
+  assert.match(text, /only other architectures/);
+  assert.match(text, /INSTALL_NO_MATCHING_ABI/);
+});
+
+test("the install hint checks minSdk and arm64, not debuggable", async () => {
+  const { remediationFor } = await import("../src/run.mjs");
+  const hint = remediationFor("INSTALL_FAILED_OTHER");
+  assert.match(hint, /minSdk/);
+  assert.match(hint, /arm64/);
+  assert.doesNotMatch(hint, /debuggable/);
+});
